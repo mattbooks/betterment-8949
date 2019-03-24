@@ -1,0 +1,117 @@
+#!/usr/bin/env ruby
+
+require 'csv'
+require 'pdf_forms'
+require 'pp'
+require 'optparse'
+
+name = nil
+ssn = nil
+sales_csv = nil
+output_dir = nil
+template = nil
+
+options = OptionParser.new do |opts|
+  opts.banner = "Usage: betterment-8949 [options]"
+
+  opts.on("-n", "--name", String, "Your name", :REQUIRED) { |v| name = v }
+  opts.on("-s", "--ssn", String, "Your SSN", :REQUIRED) { |v| ssn = v }
+  opts.on("-c", "--csv", "Path to betterment CSV", :REQUIRED) { |v| sales_csv = v }
+  opts.on("-o", "--output-dir", "Path to output PDFs", :REQUIRED) { |v| OUTPUT_DIR = v }
+  opts.on("-t", "--f8949-template", "Path to form 8949 from IRS", :REQUIRED) { |v| template = v }
+end
+options.parse!
+
+if !name || !ssn || !sales_csv || !OUTPUT_DIR || !template
+  puts options
+  exit
+end
+
+stocks = CSV.read(sales_csv)
+selected = stocks.map do |_act, desc, _symb, _cuisp, acq, sold, proc, cost, gain, wash, _fed, _type, _noncov, cat|
+  [desc, acq, sold, proc, cost, gain, wash, cat]
+end
+
+long = selected.select { |desc, acq, sold, proc, cost, gain, wash, cat| cat == 'D' }
+
+short = selected.select { |desc, acq, sold, proc, cost, gain, wash, cat| cat == 'A' }
+
+A_FIELD = 'topmostSubform[0].Page1[0].c1_1[0]'
+D_FIELD = 'topmostSubform[0].Page2[0].c2_1[0]'
+
+def name_field(page)
+  "topmostSubform[0].Page#{page}[0].f#{page}_1[0]"
+end
+
+def ssn_field(page)
+  "topmostSubform[0].Page#{page}[0].f#{page}_2[0]"
+end
+
+def get_cell(page, row, index)
+  "topmostSubform[0].Page#{page}[0].Table_Line1[0].Row#{row + 1}[0].f#{page}_#{index}[0]"
+end
+
+def sum_field(page, idx)
+  "topmostSubform[0].Page#{page}[0].f#{page}_#{115 + idx}[0]"
+end
+
+def form_path(num)
+  "#{OUTPUT_DIR}/#{num}.pdf"
+end
+
+def format(val)
+  "$#{"%0.2f" % val.round(2)}"
+end
+
+def fill(data_in, data_out, page)
+  index = 3
+  proc_sum = 0
+  cost_sum = 0
+  gain_sum = 0
+  wash_sum = 0
+  data_in.each_with_index do |(desc, acq, sold, proc, cost, gain, wash, cat), row|
+    data_out[get_cell(page, row, index)] = desc; index += 1
+    data_out[get_cell(page, row, index)] = acq; index += 1
+    data_out[get_cell(page, row, index)] = sold; index += 1
+    data_out[get_cell(page, row, index)] = proc; index += 1; proc_sum += proc.parse_cur
+    data_out[get_cell(page, row, index)] = cost; index += 1; cost_sum += cost.parse_cur
+    data_out[get_cell(page, row, index)] = wash == "$0.00" ? '' : 'W'; index += 1
+    data_out[get_cell(page, row, index)] = wash == "$0.00" ? '' : wash; index += 1; wash_sum += wash.parse_cur
+    data_out[get_cell(page, row, index)] = format(wash.parse_cur + gain.parse_cur); index += 1; gain_sum += gain.parse_cur + wash.parse_cur
+  end
+
+  data_out[sum_field(page, 0)] = format(proc_sum)
+  data_out[sum_field(page, 1)] = format(cost_sum)
+  data_out[sum_field(page, 3)] = format(wash_sum)
+  data_out[sum_field(page, 4)] = format(gain_sum)
+end
+
+pdftk = PdfForms.new('/usr/local/bin/pdftk')
+
+class String
+  def parse_cur
+    self.tr('$', '').to_f
+  end
+end
+
+short_pages = short.each_slice(14)
+long_pages = long.each_slice(14)
+
+FileUtils.mkdir_p(OUTPUT_DIR)
+
+short_pages.zip(long_pages).each_with_index do |(short_page, long_page), doc_num|
+  data = {}
+  data[name_field(1)] = name
+  data[ssn_field(1)] = ssn
+  data[name_field(2)] = name
+  data[ssn_field(2)] = ssn
+  data[A_FIELD] = 1
+  data[D_FIELD] = 1
+
+  fill(short_page, data, 1) if short_page
+  fill(long_page, data, 2) if long_page
+
+  puts "Generating #{form_path(doc_num)}"
+
+  pdftk.fill_form(template, form_path(doc_num), data)
+end
