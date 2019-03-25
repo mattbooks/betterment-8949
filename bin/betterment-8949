@@ -32,6 +32,12 @@ selected = stocks.map do |_act, desc, _symb, _cuisp, acq, sold, proc, cost, gain
   [desc, acq, sold, proc, cost, gain, wash, cat]
 end
 
+class String
+  def parse_cur
+    self.tr('$', '').to_f
+  end
+end
+
 long = selected.select { |desc, acq, sold, proc, cost, gain, wash, cat| cat == 'D' }
 
 short = selected.select { |desc, acq, sold, proc, cost, gain, wash, cat| cat == 'A' }
@@ -56,12 +62,27 @@ def sum_field(page, idx)
 end
 
 def form_path(num)
-  "#{OUTPUT_DIR}/#{num}.pdf"
+  "#{OUTPUT_DIR}/#{"%03d" % num}.pdf"
 end
 
 def format(val)
   "$#{"%0.2f" % val.round(2)}"
 end
+
+SUMS = {
+  1 => {
+    proc: short.map { |desc, acq, sold, proc, cost, gain, wash, cat| proc.parse_cur }.sum,
+    cost: short.map { |desc, acq, sold, proc, cost, gain, wash, cat| cost.parse_cur }.sum,
+    wash: short.map { |desc, acq, sold, proc, cost, gain, wash, cat| wash.parse_cur }.sum,
+    gain: short.map { |desc, acq, sold, proc, cost, gain, wash, cat| gain.parse_cur + wash.parse_cur }.sum,
+  },
+  2 => {
+    proc: long.map { |desc, acq, sold, proc, cost, gain, wash, cat| proc.parse_cur }.sum,
+    cost: long.map { |desc, acq, sold, proc, cost, gain, wash, cat| cost.parse_cur }.sum,
+    wash: long.map { |desc, acq, sold, proc, cost, gain, wash, cat| wash.parse_cur }.sum,
+    gain: long.map { |desc, acq, sold, proc, cost, gain, wash, cat| gain.parse_cur + wash.parse_cur }.sum,
+  },
+}
 
 def fill(data_in, data_out, page)
   index = 3
@@ -80,19 +101,13 @@ def fill(data_in, data_out, page)
     data_out[get_cell(page, row, index)] = format(wash.parse_cur + gain.parse_cur); index += 1; gain_sum += gain.parse_cur + wash.parse_cur
   end
 
-  data_out[sum_field(page, 0)] = format(proc_sum)
-  data_out[sum_field(page, 1)] = format(cost_sum)
-  data_out[sum_field(page, 3)] = format(wash_sum)
-  data_out[sum_field(page, 4)] = format(gain_sum)
+  data_out[sum_field(page, 0)] = format(SUMS[page][:proc])
+  data_out[sum_field(page, 1)] = format(SUMS[page][:cost])
+  data_out[sum_field(page, 3)] = format(SUMS[page][:wash])
+  data_out[sum_field(page, 4)] = format(SUMS[page][:gain])
 end
 
 pdftk = PdfForms.new('/usr/local/bin/pdftk')
-
-class String
-  def parse_cur
-    self.tr('$', '').to_f
-  end
-end
 
 short_pages = short.each_slice(14)
 long_pages = long.each_slice(14)
